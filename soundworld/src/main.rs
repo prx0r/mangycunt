@@ -1,12 +1,14 @@
 use std::{
     f32::consts::TAU,
     fs::{self, File},
-    io::BufWriter,
+    io::{BufRead, BufReader, BufWriter, Read, Write},
+    net::{TcpListener, TcpStream},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
         Arc,
     },
+    thread,
     time::{Duration, Instant},
 };
 
@@ -26,15 +28,18 @@ mod ai;
 mod core;
 mod world;
 use crate::core::{
-    Command, EventOrigin, MusicCommand, ParamId, Project, SoundCommand, TransportCommand,
-    VisualCommand, WorldCommand,
+    Command, EventOrigin, InstrumentCommand, MusicCommand, ParamId, Project, SoundCommand,
+    TransportCommand, VisualCommand, WorldCommand,
 };
 use crate::world::{CreativeCorpus, CreativeObject};
+
+const API_BIND: &str = "127.0.0.1:3769";
 
 fn main() -> eframe::Result<()> {
     let hardware = HardwareProbe::probe();
     let _ = hardware.write();
     let audio = AudioEngine::start().ok();
+    let api_rx = start_api_server(API_BIND).ok();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1180.0, 820.0]),
         ..Default::default()
@@ -42,8 +47,112 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "SoundWorld",
         options,
-        Box::new(move |_cc| Box::new(SoundWorldApp::new(hardware, audio))),
+        Box::new(move |_cc| Box::new(SoundWorldApp::new(hardware, audio, api_rx))),
     )
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ApiCommandRequest {
+    #[serde(default = "default_api_origin")]
+    origin: EventOrigin,
+    commands: Vec<Command>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ApiCommandResponse {
+    accepted: usize,
+    rejected: Vec<String>,
+}
+
+fn default_api_origin() -> EventOrigin {
+    EventOrigin::Ai
+}
+
+fn start_api_server(bind: &str) -> Result<Receiver<ApiCommandRequest>> {
+    let listener = TcpListener::bind(bind).with_context(|| format!("bind API server at {bind}"))?;
+    let (tx, rx) = bounded::<ApiCommandRequest>(64);
+    let bind_label = bind.to_string();
+    thread::Builder::new()
+        .name("soundworld-api".into())
+        .spawn(move || {
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(stream) => handle_api_stream(stream, &tx),
+                    Err(e) => eprintln!("SoundWorld API accept error on {bind_label}: {e}"),
+                }
+            }
+        })
+        .context("spawn API server thread")?;
+    Ok(rx)
+}
+
+fn handle_api_stream(mut stream: TcpStream, tx: &Sender<ApiCommandRequest>) {
+    let result = read_api_request(&mut stream).and_then(|(method, path, body)| {
+        if method == "GET" && path == "/health" {
+            return Ok((
+                200,
+                serde_json::json!({ "ok": true, "service": "soundworld" }),
+            ));
+        }
+        if method == "POST" && path == "/commands" {
+            let request: ApiCommandRequest =
+                serde_json::from_slice(&body).context("invalid command JSON")?;
+            let accepted = request.commands.len();
+            tx.send(request).context("send commands to app")?;
+            let response = ApiCommandResponse {
+                accepted,
+                rejected: vec![],
+            };
+            return Ok((200, serde_json::to_value(response)?));
+        }
+        Ok((404, serde_json::json!({ "error": "not found" })))
+    });
+
+    let (status, payload) = match result {
+        Ok(value) => value,
+        Err(e) => (400, serde_json::json!({ "error": e.to_string() })),
+    };
+    let body = serde_json::to_vec(&payload).unwrap_or_else(|_| b"{\"error\":\"encode\"}".to_vec());
+    let reason = match status {
+        200 => "OK",
+        404 => "Not Found",
+        _ => "Bad Request",
+    };
+    let header = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(&body);
+}
+
+fn read_api_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>)> {
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+    let mut reader = BufReader::new(stream);
+    let mut first = String::new();
+    reader.read_line(&mut first)?;
+    let mut parts = first.split_whitespace();
+    let method = parts.next().context("missing HTTP method")?.to_string();
+    let path = parts.next().context("missing HTTP path")?.to_string();
+    let mut content_length = 0_usize;
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        if line == "\r\n" || line.is_empty() {
+            break;
+        }
+        if let Some(value) = line
+            .strip_prefix("Content-Length:")
+            .or_else(|| line.strip_prefix("content-length:"))
+        {
+            content_length = value.trim().parse().context("bad Content-Length")?;
+        }
+    }
+    let mut body = vec![0_u8; content_length];
+    if content_length > 0 {
+        reader.read_exact(&mut body)?;
+    }
+    Ok((method, path, body))
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -321,6 +430,7 @@ struct SoundWorldApp {
     corpus: CreativeCorpus,
     hardware: HardwareProbe,
     audio: Option<AudioEngine>,
+    api_rx: Option<Receiver<ApiCommandRequest>>,
     mode: Mode,
     patch: Patch,
     patches: Vec<Patch>,
@@ -337,7 +447,11 @@ struct SoundWorldApp {
 }
 
 impl SoundWorldApp {
-    fn new(hardware: HardwareProbe, audio: Option<AudioEngine>) -> Self {
+    fn new(
+        hardware: HardwareProbe,
+        audio: Option<AudioEngine>,
+        api_rx: Option<Receiver<ApiCommandRequest>>,
+    ) -> Self {
         let patch = Patch::init_bass();
         let patch_id = patch.id;
         let mut app = Self {
@@ -345,6 +459,7 @@ impl SoundWorldApp {
             corpus: CreativeCorpus::default(),
             hardware,
             audio,
+            api_rx,
             mode: Mode::World,
             patch: patch.clone(),
             patches: vec![patch],
@@ -393,6 +508,72 @@ impl SoundWorldApp {
         app
     }
 
+    fn drain_api_commands(&mut self) {
+        let Some(api_rx) = self.api_rx.as_ref().cloned() else {
+            return;
+        };
+        for request in api_rx.try_iter() {
+            let count = request.commands.len();
+            for command in request.commands {
+                self.apply_external_command(request.origin.clone(), command);
+            }
+            self.status = format!("API accepted {count} command(s)");
+        }
+    }
+
+    fn apply_external_command(&mut self, origin: EventOrigin, command: Command) {
+        match &command {
+            Command::Transport(TransportCommand::Play) => self.playing = true,
+            Command::Transport(TransportCommand::Stop) => self.playing = false,
+            Command::Transport(TransportCommand::SetBpm(bpm)) => {
+                self.music.bpm = (*bpm as f32).clamp(40.0, 150.0);
+            }
+            Command::Music(MusicCommand::Nudge {
+                target,
+                delta,
+                beats: _,
+            }) => self.nudge_without_event(target, *delta),
+            Command::Music(MusicCommand::SetDensity(value)) => {
+                self.music.density = clamp01(*value);
+            }
+            Command::Music(MusicCommand::SetTension(value)) => {
+                self.music.tension = clamp01(*value);
+            }
+            Command::Music(MusicCommand::SetMovement(value)) => {
+                self.music.movement = clamp01(*value);
+            }
+            Command::Visual(VisualCommand::SetScene { name }) => {
+                self.visuals_enabled = name != "disabled";
+                self.mode = if self.visuals_enabled {
+                    Mode::Visual
+                } else {
+                    Mode::Track
+                };
+            }
+            Command::World(WorldCommand::Explore { radius, .. }) => {
+                self.world.exploration_radius = radius.clamp(0.05, 1.0);
+                self.generate_candidates_only();
+                self.world.trajectory.push(WorldEvent::Explore {
+                    t: self.t(),
+                    parent: self.patch.id,
+                });
+            }
+            Command::Sound(SoundCommand::Mutate { radius, .. }) => {
+                let mut rng = ChaCha8Rng::seed_from_u64(self.patch.seed + 991);
+                mutate_patch(&mut self.patch, radius.clamp(0.0, 1.0), 0.25, &mut rng);
+                self.sync_audio_patch();
+            }
+            Command::Sound(SoundCommand::Anchor { .. }) => self.anchor_current(),
+            Command::Instrument(InstrumentCommand::NoteOn { midi, velocity, .. }) => {
+                if let Some(audio) = &self.audio {
+                    audio.note_on(*midi, velocity.clamp(0.0, 1.0));
+                }
+            }
+            _ => {}
+        }
+        self.project.accept_command(origin, command);
+    }
+
     fn register_current_patch_object(&mut self, context: &str) {
         let object = CreativeObject::patch(
             self.patch.name.clone(),
@@ -416,6 +597,21 @@ impl SoundWorldApp {
     }
 
     fn generate_candidates(&mut self) {
+        self.generate_candidates_only();
+        self.world.trajectory.push(WorldEvent::Explore {
+            t: self.t(),
+            parent: self.patch.id,
+        });
+        self.project.accept_command(
+            EventOrigin::HumanUi,
+            Command::World(WorldCommand::Explore {
+                patch: crate::core::PatchId(self.patch.id),
+                radius: self.world.exploration_radius,
+            }),
+        );
+    }
+
+    fn generate_candidates_only(&mut self) {
         let mut rng = ChaCha8Rng::seed_from_u64(self.patch.seed + self.patch.generation as u64 + 1);
         self.world.candidates.clear();
         for idx in 0..16 {
@@ -442,17 +638,6 @@ impl SoundWorldApp {
                 centroid,
             });
         }
-        self.world.trajectory.push(WorldEvent::Explore {
-            t: self.t(),
-            parent: self.patch.id,
-        });
-        self.project.accept_command(
-            EventOrigin::HumanUi,
-            Command::World(WorldCommand::Explore {
-                patch: crate::core::PatchId(self.patch.id),
-                radius: self.world.exploration_radius,
-            }),
-        );
     }
 
     fn anchor_current(&mut self) {
@@ -599,6 +784,24 @@ impl SoundWorldApp {
     }
 
     fn nudge(&mut self, target: &str, delta: f32) {
+        self.nudge_without_event(target, delta);
+        self.world.trajectory.push(WorldEvent::Nudge {
+            t: self.t(),
+            target: target.into(),
+            value: delta,
+        });
+        self.project.accept_command(
+            EventOrigin::HumanUi,
+            Command::Music(MusicCommand::Nudge {
+                target: target.into(),
+                delta,
+                beats: 8.0,
+            }),
+        );
+        self.sync_audio_patch();
+    }
+
+    fn nudge_without_event(&mut self, target: &str, delta: f32) {
         match target {
             "darkness" => {
                 self.patch.semantic.darkness = clamp01(self.patch.semantic.darkness + delta);
@@ -617,19 +820,6 @@ impl SoundWorldApp {
             }
             _ => {}
         }
-        self.world.trajectory.push(WorldEvent::Nudge {
-            t: self.t(),
-            target: target.into(),
-            value: delta,
-        });
-        self.project.accept_command(
-            EventOrigin::HumanUi,
-            Command::Music(MusicCommand::Nudge {
-                target: target.into(),
-                delta,
-                beats: 8.0,
-            }),
-        );
         self.sync_audio_patch();
     }
 
@@ -661,6 +851,7 @@ impl SoundWorldApp {
 
 impl eframe::App for SoundWorldApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.drain_api_commands();
         self.ambient_tick();
         if self.visuals_enabled {
             self.visual.geometry_scale =
@@ -1544,4 +1735,180 @@ fn svf_lowpass(input: f32, lp: &mut f32, bp: &mut f32, cutoff: f32, resonance: f
     *bp += f * hp;
     *lp += f * *bp;
     *lp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossbeam_channel::bounded;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use std::time::Duration;
+
+    fn free_bind_addr() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().to_string()
+    }
+
+    fn http_request(addr: &str, request: &str) -> String {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    }
+
+    #[test]
+    fn project_accepts_transport_command_as_event() {
+        let mut project = Project::new("test", 48_000, 82.0);
+        assert!(!project.transport.playing);
+        assert_eq!(project.history.events.len(), 0);
+
+        project.accept_command(
+            EventOrigin::HumanUi,
+            Command::Transport(TransportCommand::Play),
+        );
+
+        assert!(project.transport.playing);
+        assert_eq!(project.history.events.len(), 1);
+    }
+
+    #[test]
+    fn creative_corpus_records_anchor_preference() {
+        let mut corpus = CreativeCorpus::default();
+        let object = CreativeObject::patch("test bass", Uuid::new_v4(), vec!["bass".into()]);
+        let id = corpus.add_object_to_default_world(object);
+        corpus.anchor(id, "unit test anchor");
+
+        assert_eq!(corpus.objects.len(), 1);
+        assert_eq!(corpus.worlds.len(), 1);
+        assert_eq!(corpus.worlds[0].anchors, vec![id]);
+        assert_eq!(corpus.preferences.len(), 1);
+    }
+
+    #[test]
+    fn oscillator_and_filter_produce_finite_signal() {
+        for wave in 0..=4 {
+            let sample = osc(wave, 0.25);
+            assert!(sample.is_finite());
+            assert!((-1.25..=1.25).contains(&sample));
+        }
+
+        let mut lp = 0.0;
+        let mut bp = 0.0;
+        let filtered = svf_lowpass(0.5, &mut lp, &mut bp, 0.4, 0.2);
+        assert!(filtered.is_finite());
+    }
+
+    #[test]
+    fn synth_generates_nonzero_audio_after_note() {
+        let patch = Arc::new(AtomicPatch::new());
+        let (note_tx, note_rx) = bounded::<NoteMsg>(8);
+        let (writer_tx, _writer_rx) = bounded::<(f32, f32)>(8);
+        let recording = Arc::new(AtomicBool::new(false));
+        let mut synth = Synth::new(48_000.0, patch, note_rx, writer_tx, recording.clone());
+
+        note_tx
+            .send(NoteMsg {
+                midi: 36,
+                velocity: 0.9,
+            })
+            .unwrap();
+
+        let mut peak = 0.0_f32;
+        for _ in 0..512 {
+            peak = peak.max(synth.next_frame_sample().abs());
+        }
+
+        assert!(peak > 0.0001, "expected audible nonzero synth output");
+        assert!(!recording.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn api_health_endpoint_responds() {
+        let addr = free_bind_addr();
+        let _rx = start_api_server(&addr).unwrap();
+
+        let response = http_request(&addr, "GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n");
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("\"ok\":true"));
+    }
+
+    #[test]
+    fn api_command_endpoint_delivers_typed_commands() {
+        let addr = free_bind_addr();
+        let rx = start_api_server(&addr).unwrap();
+        let request = ApiCommandRequest {
+            origin: EventOrigin::Ai,
+            commands: vec![
+                Command::Transport(TransportCommand::Play),
+                Command::Music(MusicCommand::SetDensity(0.25)),
+            ],
+        };
+        let body = serde_json::to_string(&request).unwrap();
+        let wire = format!(
+            "POST /commands HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+
+        let response = http_request(&addr, &wire);
+        let delivered = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("\"accepted\":2"));
+        assert_eq!(delivered.commands.len(), 2);
+    }
+
+    #[test]
+    fn app_applies_api_commands_to_product_state() {
+        let hardware = HardwareProbe {
+            cpu_threads: 2,
+            ram_mb: 4096,
+            audio_device: "test".into(),
+            sample_rate: 48_000,
+            recommended_buffer: 512,
+            opengl_version: "test".into(),
+            quality_profile: "low".into(),
+        };
+        let mut app = SoundWorldApp::new(hardware, None, None);
+        let initial_candidates = app.world.candidates.len();
+
+        app.apply_external_command(EventOrigin::Ai, Command::Transport(TransportCommand::Play));
+        app.apply_external_command(
+            EventOrigin::Ai,
+            Command::Music(MusicCommand::SetDensity(0.2)),
+        );
+        app.apply_external_command(
+            EventOrigin::Ai,
+            Command::Visual(VisualCommand::SetScene {
+                name: "disabled".into(),
+            }),
+        );
+        app.apply_external_command(
+            EventOrigin::Ai,
+            Command::World(WorldCommand::Explore {
+                patch: crate::core::PatchId(app.patch.id),
+                radius: 0.45,
+            }),
+        );
+
+        assert!(app.playing);
+        assert_eq!(app.music.density, 0.2);
+        assert!(!app.visuals_enabled);
+        assert_eq!(app.mode, Mode::Track);
+        assert_eq!(app.world.candidates.len(), initial_candidates);
+        assert!(matches!(
+            app.project.history.events.last().map(|event| &event.origin),
+            Some(EventOrigin::Ai)
+        ));
+    }
 }
