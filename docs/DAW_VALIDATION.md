@@ -2,6 +2,8 @@
 
 Date: 2026-08-15
 
+Machine profile: see `docs/LOCAL_BUILD_ENVIRONMENT.md`.
+
 ## What Was Validated
 
 Local Linux build prerequisites:

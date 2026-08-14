@@ -27,6 +27,8 @@ SoundWorld should become an agent/controller/instrument subsystem that can drive
 
 ## Local Build Requirements
 
+For the full captured local machine profile, read `docs/LOCAL_BUILD_ENVIRONMENT.md`.
+
 The Linux host needs:
 
 ```bash

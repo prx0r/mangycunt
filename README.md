@@ -27,4 +27,5 @@ Then read:
 - `docs/OPENDAW_INTEGRATION.md`
 - `docs/OTHER_REPOS_ROADMAP.md`
 - `docs/DAW_VALIDATION.md`
+- `docs/LOCAL_BUILD_ENVIRONMENT.md`
 - `soundworld/AGENT_HANDOFF.md`
