@@ -1,0 +1,16 @@
+{
+  "dark": { "filter_cutoff": -0.22, "osc_b_level": -0.05, "space": 0.04 },
+  "bright": { "filter_cutoff": 0.22, "drive": -0.03 },
+  "moving": { "movement": 0.18, "lfo_rate": 0.10 },
+  "still": { "movement": -0.18, "lfo_rate": -0.08 },
+  "aggressive": { "drive": 0.18, "filter_resonance": 0.05 },
+  "soft": { "drive": -0.16, "amp_attack": 0.05 },
+  "dirty": { "drive": 0.20, "noise_level": 0.06 },
+  "clean": { "drive": -0.20, "noise_level": -0.06 },
+  "wide": { "space": 0.18 },
+  "narrow": { "space": -0.18 },
+  "strange": { "novelty": 0.20, "fm_amount": 0.10 },
+  "stable": { "novelty": -0.20, "fm_amount": -0.08 },
+  "heavy": { "sub_level": 0.18, "filter_cutoff": -0.06, "drive": 0.06 },
+  "thin": { "sub_level": -0.18, "filter_cutoff": 0.06 }
+}
