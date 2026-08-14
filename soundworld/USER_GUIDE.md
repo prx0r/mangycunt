@@ -166,6 +166,9 @@ explore
 anchor
 anchor this
 new bass
+create bass world
+show me something
+show me something i haven't noticed
 ```
 
 Example:
@@ -281,6 +284,7 @@ Built:
 - JSON project save
 - canonical `Project`, `Command`, `Event`, `Transport` scaffolding
 - AI planner boundary docs/code
+- creative corpus/world/preference scaffolding
 
 Not built yet:
 

@@ -24,10 +24,12 @@ use uuid::Uuid;
 
 mod ai;
 mod core;
+mod world;
 use crate::core::{
     Command, EventOrigin, MusicCommand, ParamId, Project, SoundCommand, TransportCommand,
     VisualCommand, WorldCommand,
 };
+use crate::world::{CreativeCorpus, CreativeObject};
 
 fn main() -> eframe::Result<()> {
     let hardware = HardwareProbe::probe();
@@ -316,6 +318,7 @@ enum WorldEvent {
 
 struct SoundWorldApp {
     project: Project,
+    corpus: CreativeCorpus,
     hardware: HardwareProbe,
     audio: Option<AudioEngine>,
     mode: Mode,
@@ -339,6 +342,7 @@ impl SoundWorldApp {
         let patch_id = patch.id;
         let mut app = Self {
             project: Project::new("Default", hardware.sample_rate, 82.0),
+            corpus: CreativeCorpus::default(),
             hardware,
             audio,
             mode: Mode::World,
@@ -384,8 +388,21 @@ impl SoundWorldApp {
             last_note: Instant::now(),
         };
         app.sync_audio_patch();
+        app.register_current_patch_object("initial patch");
         app.generate_candidates();
         app
+    }
+
+    fn register_current_patch_object(&mut self, context: &str) {
+        let object = CreativeObject::patch(
+            self.patch.name.clone(),
+            self.patch.id,
+            self.patch.tags.clone(),
+        );
+        let id = self.corpus.add_object_to_default_world(object);
+        if context.contains("anchor") {
+            self.corpus.anchor(id, context);
+        }
     }
 
     fn sync_audio_patch(&self) {
@@ -445,6 +462,7 @@ impl SoundWorldApp {
         if !self.patches.iter().any(|p| p.id == self.patch.id) {
             self.patches.push(self.patch.clone());
         }
+        self.register_current_patch_object("anchor patch");
         self.world.trajectory.push(WorldEvent::PatchAnchor {
             t: self.t(),
             patch: self.patch.id,
@@ -473,6 +491,7 @@ impl SoundWorldApp {
         fs::create_dir_all(root.join("recordings"))?;
         let project = serde_json::json!({
             "mangy_project": self.project,
+            "creative_corpus": self.corpus,
             "world": self.world,
             "music_state": self.music,
             "visual_state": self.visual,
@@ -550,9 +569,17 @@ impl SoundWorldApp {
             }
             "explore" => self.generate_candidates(),
             "anchor this" | "anchor" => self.anchor_current(),
+            "create bass world" | "make bass world" => {
+                self.corpus.ensure_default_world();
+                self.status = "Bass World exists in the creative corpus".into();
+            }
+            "show me something" | "show me something i haven't noticed" => {
+                self.status = self.suggest_unnoticed_relationship();
+            }
             "new bass" => {
                 self.patch = Patch::init_bass();
                 self.sync_audio_patch();
+                self.register_current_patch_object("new bass");
                 self.project.accept_command(
                     EventOrigin::HumanUi,
                     Command::Sound(SoundCommand::Mutate {
@@ -1013,6 +1040,12 @@ impl SoundWorldApp {
         ui.label(format!("Patches: {}", self.patches.len()));
         ui.label(format!("Anchors: {}", self.world.anchors.len()));
         ui.label(format!("Events: {}", self.world.trajectory.len()));
+        ui.label(format!("Creative objects: {}", self.corpus.objects.len()));
+        ui.label(format!("Corpus worlds: {}", self.corpus.worlds.len()));
+        ui.label(format!(
+            "Preference events: {}",
+            self.corpus.preferences.len()
+        ));
         ui.label(format!(
             "Project graph events: {}",
             self.project.history.events.len()
@@ -1055,11 +1088,32 @@ impl SoundWorldApp {
         ui.label("AI-native direction");
         ui.label("The command bar is intentionally shaped like a future chatbar. Today it uses a tiny local parser. Next, an LLM provider can translate free text into the same safe Command -> Event system.");
         ui.label("Example future prompt: start an ambient track with the anchored basses, no visuals, slowly get darker over 16 bars.");
+        ui.label("Library/world direction: saved patches, samples, motifs, loops, modulations, harmony paths, and performance fragments become CreativeObjects. Worlds are queryable maps over that corpus.");
         ui.separator();
         ui.label("Other synths installed for DAWs");
         ui.label("Surge XT: standalone app plus VST3/LV2/CLAP plugins. Use it for polished bass sound design.");
         ui.label("Cardinal: VST3 modular synth plugin installed. Use Ardour's plugin scan, then add Cardinal/Surge XT to instrument tracks.");
         ui.label("Ardour + PipeWire + qpwgraph are installed for DAW routing.");
+    }
+
+    fn suggest_unnoticed_relationship(&self) -> String {
+        let anchors = self
+            .corpus
+            .worlds
+            .first()
+            .map(|w| w.anchors.len())
+            .unwrap_or(0);
+        if self.corpus.objects.len() < 3 {
+            "Not enough saved sounds yet. Create or anchor at least three patches first.".into()
+        } else if anchors == 0 {
+            "You have sounds in the corpus, but no anchored favorites yet. Anchor a few so Mangy can learn preference.".into()
+        } else {
+            format!(
+                "Corpus has {} objects and {} anchors. Next build should compare sub weight, brightness, drive, and movement to find bridges.",
+                self.corpus.objects.len(),
+                anchors
+            )
+        }
     }
 }
 

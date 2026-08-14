@@ -10,6 +10,7 @@ The first implemented step is the `src/core/` layer:
 - `event.rs`: immutable events with origin, musical time, sample time, and command payload.
 - `project.rs`: the first canonical `Project` graph: transport, tracks, instruments, sound library, harmony, world, visuals, automation, and event history.
 - `src/ai/`: provider-neutral AI planner boundary. LLMs may propose validated commands, but they do not touch realtime audio.
+- `src/world/`: creative corpus, objects, feature views, worlds-as-queries, regions, and preference events.
 
 The running egui prototype still owns the current UI/audio state, but key UI actions now also flow into:
 
