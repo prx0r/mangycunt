@@ -99,6 +99,20 @@ curl -s http://127.0.0.1:3769/commands \
   -d '{"origin":"Ai","commands":[{"Transport":"Play"},{"Music":{"SetDensity":0.25}},{"Music":{"SetMovement":0.7}},{"Visual":{"SetScene":{"name":"disabled"}}}]}'
 ```
 
+State:
+
+```bash
+curl -s http://127.0.0.1:3769/state
+```
+
+Macro batch:
+
+```bash
+curl -s http://127.0.0.1:3769/macro \
+  -H 'Content-Type: application/json' \
+  -d '{"origin":"Ai","intent":"dark ambient","macros":["ambient","dark","wide","play"]}'
+```
+
 Implemented command application covers:
 
 - transport play/stop/BPM
@@ -109,8 +123,10 @@ Implemented command application covers:
 - patch mutation
 - patch anchoring
 - note-on audition
+- `GET /state` exposes transport, patch summary, music state, harmony state, visual state, and affect metrics
+- `POST /macro` maps simple words into typed commands
 
-Important: the API currently accepts valid typed `Command` JSON. It still needs a separate allowlist/security validation layer before treating arbitrary LLM output as trusted.
+Important: `POST /macro` reports rejected unknown macro words. `POST /commands` still accepts valid typed `Command` JSON directly, so it needs a stricter allowlist before exposing it beyond localhost.
 
 ## Proof / Validation
 
@@ -119,7 +135,7 @@ See `TESTING_NOTES.md` for exact commands and results.
 Validated:
 
 - `cargo fmt`
-- 7 unit tests pass
+- 10 unit tests pass
 - `cargo check`
 - optimized release build
 - GUI launch smoke test
@@ -130,10 +146,9 @@ Not fully validated:
 
 - physical speaker audibility
 - screenshot/pixel validation for visuals
-- WAV recording end to end
 - Ardour/REAPER plugin scan for Surge XT/Cardinal during the latest pass
 - real LLM provider calling the API
-- API allowlist/security hardening
+- strict `POST /commands` allowlist/security hardening
 
 ## Architecture Rules
 
@@ -206,13 +221,12 @@ Surge XT / Cardinal
 
 - add explicit allowlist validation before commands are accepted
 - reject unknown or unsupported commands with `rejected`
-- add `/state` endpoint for current transport, patch, music, visuals, anchors, and event count
 - add tests for invalid JSON, unsupported commands, and command clamping
 
 ### P1: Make Agent Control Useful
 
 - add `/audition` endpoint to trigger a note and optionally render a tiny WAV preview
-- add `/macro` endpoint for words like `heavy`, `dark`, `sharp`, `wide`, `subby`, `acid`, `ambient`, `clean`, `dirty`
+- expand `/macro` with words like `sharp`, `acid`, `clean`, and `dirty`
 - add automation commands for filter sweeps and parameter ramps
 - add a chat/review panel in the GUI
 - add an optional local process provider that can call OpenCode/OpenRouter/OpenAI through external scripts

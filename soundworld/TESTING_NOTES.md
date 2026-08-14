@@ -9,13 +9,13 @@ This is a prototype validation pass, not a claim that SoundWorld is a finished D
 | Area | Status | Notes |
 | --- | --- | --- |
 | Rust formatting | PASS | `cargo fmt` completed cleanly. |
-| Unit tests | PASS | 8 tests passed. |
+| Unit tests | PASS | 10 tests passed. |
 | Crate check | PASS | `cargo check` completed cleanly. |
 | Optimized build | PASS | `cargo build --release` completed cleanly. |
 | GUI launch | PASS | Installed release binary launched on `DISPLAY=:0` and stayed alive until timeout killed it. |
-| Local API | PASS | `GET /health` and `POST /commands` are covered by unit tests. |
+| Local API | PASS | `GET /health`, `GET /state`, `POST /commands`, and `POST /macro` are covered by unit tests. |
 | API drives app state | PASS | Test applies API-style commands and verifies playback, density, visuals, exploration, and AI-origin event logging. |
-| Live API drives GUI | PASS | Running GUI returned API health OK, accepted a 7-command AI batch, and stayed alive until the smoke-test timeout. |
+| Live API drives GUI | PASS | Running GUI returned state, accepted macro/command batches, showed changed state after macro application, and stayed alive until the smoke-test timeout. |
 | Synth makes signal | PASS | Headless DSP test generated nonzero finite samples after a MIDI note. |
 | Visuals render path | PASS/WARN | GUI render loop smoke-tested. No crash. No screenshot or pixel-level validation was performed in this pass. |
 | Physical speaker output | WARN | DSP output is validated, but nobody listened to the speakers during this automated pass. |
@@ -81,6 +81,51 @@ Result:
 
 The GUI process stayed alive until the 20 second timeout killed it.
 
+The live macro/state smoke test used:
+
+```bash
+curl -s http://127.0.0.1:3769/state
+```
+
+Before macro:
+
+```text
+playing=false
+bpm=82.0
+density=0.35
+movement=0.35
+tension=0.25
+```
+
+Then:
+
+```bash
+curl -s http://127.0.0.1:3769/macro \
+  -H 'Content-Type: application/json' \
+  -d '{"origin":"Ai","intent":"dark ambient low arousal","macros":["ambient","dark","wide","calm","play"]}'
+```
+
+Result:
+
+```json
+{"accepted":12,"rejected":[]}
+```
+
+After macro:
+
+```text
+playing=true
+bpm=62.0
+density=0.16
+movement=0.14
+tension=0.18
+cutoff=0.20
+space=0.78
+event_count=13
+```
+
+The GUI process stayed alive until the 35 second timeout killed it.
+
 ## Unit Test Coverage Added
 
 The current red-team tests in `src/main.rs` cover:
@@ -91,6 +136,8 @@ The current red-team tests in `src/main.rs` cover:
 - `synth_generates_nonzero_audio_after_note`: sends a MIDI note into the synth and verifies generated output is nonzero.
 - `api_health_endpoint_responds`: verifies the localhost API health endpoint responds.
 - `api_command_endpoint_delivers_typed_commands`: verifies JSON commands travel through the HTTP server into the app command channel.
+- `api_state_endpoint_returns_harmony_snapshot`: verifies the API exposes harmony, affect, and transport state.
+- `api_macro_endpoint_converts_agent_words_to_commands`: verifies macro words become typed commands and unknown macro words are reported.
 - `app_applies_api_commands_to_product_state`: verifies API-style commands affect real app state and log AI-origin events.
 - `records_synth_run_to_nonzero_wav`: verifies generated synth audio is written to a readable stereo WAV file with nonzero samples.
 
@@ -102,7 +149,7 @@ The current red-team tests in `src/main.rs` cover:
 4. Current visual validation proves the app opens and keeps a GUI render loop alive. It does not prove every visual mode is correctly framed on every viewport.
 5. SoundWorld should still be treated as a standalone instrument/runtime, not a replacement DAW. Surge XT and Cardinal should be used in Ardour/REAPER for now.
 6. API tests require permission to bind/connect localhost. In the restricted sandbox they fail with `Operation not permitted`; outside that sandbox they pass.
-7. The API currently accepts well-formed typed commands. It does not yet perform a separate allowlist rejection pass, so the next security pass should reject commands outside the intended LLM tool surface before they hit the app.
+7. `POST /macro` reports rejected unknown macro words. `POST /commands` still accepts well-formed typed commands directly, so a future security pass should add an explicit allowlist if untrusted clients can reach it.
 
 ## Next Validation Items
 

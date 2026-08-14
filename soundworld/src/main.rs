@@ -6,7 +6,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -39,7 +39,8 @@ fn main() -> eframe::Result<()> {
     let hardware = HardwareProbe::probe();
     let _ = hardware.write();
     let audio = AudioEngine::start().ok();
-    let api_rx = start_api_server(API_BIND).ok();
+    let api_state = Arc::new(Mutex::new(ApiStateSnapshot::default()));
+    let api_rx = start_api_server(API_BIND, api_state.clone()).ok();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1180.0, 820.0]),
         ..Default::default()
@@ -47,7 +48,7 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "SoundWorld",
         options,
-        Box::new(move |_cc| Box::new(SoundWorldApp::new(hardware, audio, api_rx))),
+        Box::new(move |_cc| Box::new(SoundWorldApp::new(hardware, audio, api_rx, api_state))),
     )
 }
 
@@ -64,11 +65,102 @@ struct ApiCommandResponse {
     rejected: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ApiMacroRequest {
+    #[serde(default = "default_api_origin")]
+    origin: EventOrigin,
+    #[serde(default)]
+    intent: String,
+    macros: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ApiMacroResponse {
+    accepted: usize,
+    macros: Vec<String>,
+    commands: Vec<Command>,
+    rejected: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ApiStateSnapshot {
+    service: String,
+    playing: bool,
+    recording: bool,
+    visuals_enabled: bool,
+    mode: String,
+    event_count: usize,
+    candidate_count: usize,
+    anchor_count: usize,
+    patch: PatchSummary,
+    music: MusicState,
+    harmony: HarmonyState,
+    visual: VisualState,
+    affect: AffectState,
+}
+
+impl Default for ApiStateSnapshot {
+    fn default() -> Self {
+        Self {
+            service: "soundworld".into(),
+            playing: false,
+            recording: false,
+            visuals_enabled: true,
+            mode: "World".into(),
+            event_count: 0,
+            candidate_count: 0,
+            anchor_count: 0,
+            patch: PatchSummary::default(),
+            music: MusicState::default(),
+            harmony: HarmonyState::default(),
+            visual: VisualState::default(),
+            affect: AffectState::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct PatchSummary {
+    id: Uuid,
+    name: String,
+    sub_level: f32,
+    cutoff: f32,
+    resonance: f32,
+    drive: f32,
+    attack: f32,
+    release: f32,
+    space: f32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct AffectState {
+    valence: f32,
+    arousal: f32,
+    tension: f32,
+    dissonance: f32,
+    voice_leading_distance: f32,
+}
+
+impl Default for AffectState {
+    fn default() -> Self {
+        Self {
+            valence: 0.5,
+            arousal: 0.35,
+            tension: 0.25,
+            dissonance: 0.2,
+            voice_leading_distance: 0.0,
+        }
+    }
+}
+
 fn default_api_origin() -> EventOrigin {
     EventOrigin::Ai
 }
 
-fn start_api_server(bind: &str) -> Result<Receiver<ApiCommandRequest>> {
+fn start_api_server(
+    bind: &str,
+    state: Arc<Mutex<ApiStateSnapshot>>,
+) -> Result<Receiver<ApiCommandRequest>> {
     let listener = TcpListener::bind(bind).with_context(|| format!("bind API server at {bind}"))?;
     let (tx, rx) = bounded::<ApiCommandRequest>(64);
     let bind_label = bind.to_string();
@@ -77,7 +169,7 @@ fn start_api_server(bind: &str) -> Result<Receiver<ApiCommandRequest>> {
         .spawn(move || {
             for stream in listener.incoming() {
                 match stream {
-                    Ok(stream) => handle_api_stream(stream, &tx),
+                    Ok(stream) => handle_api_stream(stream, &tx, &state),
                     Err(e) => eprintln!("SoundWorld API accept error on {bind_label}: {e}"),
                 }
             }
@@ -86,13 +178,21 @@ fn start_api_server(bind: &str) -> Result<Receiver<ApiCommandRequest>> {
     Ok(rx)
 }
 
-fn handle_api_stream(mut stream: TcpStream, tx: &Sender<ApiCommandRequest>) {
+fn handle_api_stream(
+    mut stream: TcpStream,
+    tx: &Sender<ApiCommandRequest>,
+    state: &Arc<Mutex<ApiStateSnapshot>>,
+) {
     let result = read_api_request(&mut stream).and_then(|(method, path, body)| {
         if method == "GET" && path == "/health" {
             return Ok((
                 200,
                 serde_json::json!({ "ok": true, "service": "soundworld" }),
             ));
+        }
+        if method == "GET" && path == "/state" {
+            let snapshot = state.lock().map(|state| state.clone()).unwrap_or_default();
+            return Ok((200, serde_json::to_value(snapshot)?));
         }
         if method == "POST" && path == "/commands" {
             let request: ApiCommandRequest =
@@ -102,6 +202,26 @@ fn handle_api_stream(mut stream: TcpStream, tx: &Sender<ApiCommandRequest>) {
             let response = ApiCommandResponse {
                 accepted,
                 rejected: vec![],
+            };
+            return Ok((200, serde_json::to_value(response)?));
+        }
+        if method == "POST" && path == "/macro" {
+            let request: ApiMacroRequest =
+                serde_json::from_slice(&body).context("invalid macro JSON")?;
+            let (commands, rejected) = macros_to_commands(&request.macros);
+            let accepted = commands.len();
+            if accepted > 0 {
+                tx.send(ApiCommandRequest {
+                    origin: request.origin,
+                    commands: commands.clone(),
+                })
+                .context("send macro commands to app")?;
+            }
+            let response = ApiMacroResponse {
+                accepted,
+                macros: request.macros,
+                commands,
+                rejected,
             };
             return Ok((200, serde_json::to_value(response)?));
         }
@@ -153,6 +273,71 @@ fn read_api_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>)>
         reader.read_exact(&mut body)?;
     }
     Ok((method, path, body))
+}
+
+fn macros_to_commands(macros: &[String]) -> (Vec<Command>, Vec<String>) {
+    let mut commands = Vec::new();
+    let mut rejected = Vec::new();
+    for name in macros {
+        match name.trim().to_lowercase().as_str() {
+            "ambient" | "eno" | "slow_ambient" => {
+                commands.push(Command::Transport(TransportCommand::SetBpm(68.0)));
+                commands.push(Command::Music(MusicCommand::SetDensity(0.22)));
+                commands.push(Command::Music(MusicCommand::SetMovement(0.22)));
+                commands.push(Command::Music(MusicCommand::SetTension(0.25)));
+                commands.push(Command::Music(MusicCommand::Nudge {
+                    target: "space".into(),
+                    delta: 0.35,
+                    beats: 16.0,
+                }));
+            }
+            "dark" | "darker" => commands.push(Command::Music(MusicCommand::Nudge {
+                target: "darkness".into(),
+                delta: 0.2,
+                beats: 8.0,
+            })),
+            "bright" | "brighter" => commands.push(Command::Music(MusicCommand::Nudge {
+                target: "darkness".into(),
+                delta: -0.2,
+                beats: 8.0,
+            })),
+            "subby" | "heavy" => {
+                commands.push(Command::Music(MusicCommand::Nudge {
+                    target: "darkness".into(),
+                    delta: 0.1,
+                    beats: 8.0,
+                }));
+                commands.push(Command::Music(MusicCommand::SetDensity(0.3)));
+            }
+            "wide" | "space" => commands.push(Command::Music(MusicCommand::Nudge {
+                target: "space".into(),
+                delta: 0.25,
+                beats: 8.0,
+            })),
+            "tense" | "uneasy" => {
+                commands.push(Command::Music(MusicCommand::SetTension(0.65)));
+                commands.push(Command::Music(MusicCommand::SetMovement(0.55)));
+            }
+            "calm" | "low_arousal" => {
+                commands.push(Command::Transport(TransportCommand::SetBpm(62.0)));
+                commands.push(Command::Music(MusicCommand::SetDensity(0.16)));
+                commands.push(Command::Music(MusicCommand::SetMovement(0.14)));
+                commands.push(Command::Music(MusicCommand::SetTension(0.18)));
+            }
+            "no_visuals" => commands.push(Command::Visual(VisualCommand::SetScene {
+                name: "disabled".into(),
+            })),
+            "visuals" | "black_white" | "slow_orbits" => {
+                commands.push(Command::Visual(VisualCommand::SetScene {
+                    name: "harmonic_orbits_low".into(),
+                }));
+            }
+            "play" | "start" => commands.push(Command::Transport(TransportCommand::Play)),
+            "stop" => commands.push(Command::Transport(TransportCommand::Stop)),
+            _ => rejected.push(name.clone()),
+        }
+    }
+    (commands, rejected)
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -392,7 +577,7 @@ struct SoundWorld {
     trajectory: Vec<WorldEvent>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct MusicState {
     bpm: f32,
     root: i32,
@@ -404,7 +589,47 @@ struct MusicState {
     energy: f32,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+impl Default for MusicState {
+    fn default() -> Self {
+        Self {
+            bpm: 82.0,
+            root: 36,
+            scale: "minor".into(),
+            density: 0.35,
+            tension: 0.25,
+            movement: 0.35,
+            novelty: 0.18,
+            energy: 0.5,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct HarmonyState {
+    tonic: String,
+    mode: String,
+    chord_grid: Vec<String>,
+    current_chord: String,
+    key_mask: Vec<u8>,
+    chord_mask: Vec<u8>,
+    harmonic_rhythm_bars: f32,
+}
+
+impl Default for HarmonyState {
+    fn default() -> Self {
+        Self {
+            tonic: "C".into(),
+            mode: "minor".into(),
+            chord_grid: vec!["Cm9".into(), "Abmaj7".into(), "Fm9".into(), "Gsus4".into()],
+            current_chord: "Cm9".into(),
+            key_mask: vec![0, 2, 3, 5, 7, 8, 10],
+            chord_mask: vec![0, 3, 7, 10, 2],
+            harmonic_rhythm_bars: 4.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct VisualState {
     geometry_scale: f32,
     deformation: f32,
@@ -414,6 +639,21 @@ struct VisualState {
     complexity: f32,
     depth: f32,
     harmonic_position: [f32; 2],
+}
+
+impl Default for VisualState {
+    fn default() -> Self {
+        Self {
+            geometry_scale: 0.6,
+            deformation: 0.2,
+            particle_density: 0.35,
+            rotation_speed: 0.2,
+            brightness: 0.45,
+            complexity: 0.3,
+            depth: 0.2,
+            harmonic_position: [0.0, 0.0],
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -431,11 +671,13 @@ struct SoundWorldApp {
     hardware: HardwareProbe,
     audio: Option<AudioEngine>,
     api_rx: Option<Receiver<ApiCommandRequest>>,
+    api_state: Arc<Mutex<ApiStateSnapshot>>,
     mode: Mode,
     patch: Patch,
     patches: Vec<Patch>,
     world: SoundWorld,
     music: MusicState,
+    harmony: HarmonyState,
     visual: VisualState,
     command: String,
     status: String,
@@ -451,6 +693,7 @@ impl SoundWorldApp {
         hardware: HardwareProbe,
         audio: Option<AudioEngine>,
         api_rx: Option<Receiver<ApiCommandRequest>>,
+        api_state: Arc<Mutex<ApiStateSnapshot>>,
     ) -> Self {
         let patch = Patch::init_bass();
         let patch_id = patch.id;
@@ -460,6 +703,7 @@ impl SoundWorldApp {
             hardware,
             audio,
             api_rx,
+            api_state,
             mode: Mode::World,
             patch: patch.clone(),
             patches: vec![patch],
@@ -474,26 +718,9 @@ impl SoundWorldApp {
                     seed: 91832,
                 }],
             },
-            music: MusicState {
-                bpm: 82.0,
-                root: 36,
-                scale: "minor".into(),
-                density: 0.35,
-                tension: 0.25,
-                movement: 0.35,
-                novelty: 0.18,
-                energy: 0.5,
-            },
-            visual: VisualState {
-                geometry_scale: 0.6,
-                deformation: 0.2,
-                particle_density: 0.35,
-                rotation_speed: 0.2,
-                brightness: 0.45,
-                complexity: 0.3,
-                depth: 0.2,
-                harmonic_position: [0.0, 0.0],
-            },
+            music: MusicState::default(),
+            harmony: HarmonyState::default(),
+            visual: VisualState::default(),
             command: String::new(),
             status: "Initialized local procedural SoundWorld".into(),
             started: Instant::now(),
@@ -505,7 +732,77 @@ impl SoundWorldApp {
         app.sync_audio_patch();
         app.register_current_patch_object("initial patch");
         app.generate_candidates();
+        app.publish_api_state();
         app
+    }
+
+    fn publish_api_state(&self) {
+        let snapshot = self.api_snapshot();
+        if let Ok(mut state) = self.api_state.lock() {
+            *state = snapshot;
+        }
+    }
+
+    fn api_snapshot(&self) -> ApiStateSnapshot {
+        ApiStateSnapshot {
+            service: "soundworld".into(),
+            playing: self.playing,
+            recording: self.recording,
+            visuals_enabled: self.visuals_enabled,
+            mode: self.mode_label().into(),
+            event_count: self.project.history.events.len(),
+            candidate_count: self.world.candidates.len(),
+            anchor_count: self.world.anchors.len(),
+            patch: PatchSummary {
+                id: self.patch.id,
+                name: self.patch.name.clone(),
+                sub_level: self.patch.sub_level,
+                cutoff: self.patch.filter.cutoff,
+                resonance: self.patch.filter.resonance,
+                drive: self.patch.filter.drive,
+                attack: self.patch.amp.attack,
+                release: self.patch.amp.release,
+                space: self.patch.effects.space,
+            },
+            music: self.music.clone(),
+            harmony: self.harmony.clone(),
+            visual: self.visual.clone(),
+            affect: self.affect_state(),
+        }
+    }
+
+    fn affect_state(&self) -> AffectState {
+        let dissonance = interval_dissonance_for_chord(&self.harmony.chord_mask);
+        let arousal = (0.35 * ((self.music.bpm - 40.0) / 110.0)
+            + 0.25 * self.music.density
+            + 0.2 * (1.0 - self.patch.amp.attack.clamp(0.0, 0.5) * 2.0)
+            + 0.2 * self.visual.rotation_speed)
+            .clamp(0.0, 1.0);
+        let consonance = 1.0 - dissonance;
+        let valence = (0.35 * consonance
+            + 0.2 * (1.0 - self.patch.semantic.darkness)
+            + 0.2 * self.patch.sub_level
+            + 0.15 * (1.0 - self.music.tension)
+            - 0.1 * self.patch.filter.drive)
+            .clamp(0.0, 1.0);
+        AffectState {
+            valence,
+            arousal,
+            tension: self.music.tension,
+            dissonance,
+            voice_leading_distance: 0.0,
+        }
+    }
+
+    fn mode_label(&self) -> &'static str {
+        match self.mode {
+            Mode::Synth => "Synth",
+            Mode::World => "World",
+            Mode::Track => "Track",
+            Mode::Visual => "Visual",
+            Mode::Session => "Session",
+            Mode::Guide => "Guide",
+        }
     }
 
     fn drain_api_commands(&mut self) {
@@ -965,6 +1262,7 @@ impl eframe::App for SoundWorldApp {
         } else {
             100
         };
+        self.publish_api_state();
         ctx.request_repaint_after(Duration::from_millis(repaint_ms));
     }
 }
@@ -1354,6 +1652,30 @@ fn mutate_patch(p: &mut Patch, radius: f32, novelty: f32, rng: &mut ChaCha8Rng) 
 
 fn clamp01(v: f32) -> f32 {
     v.clamp(0.0, 1.0)
+}
+
+fn interval_dissonance_for_chord(mask: &[u8]) -> f32 {
+    if mask.len() < 2 {
+        return 0.0;
+    }
+    let mut total = 0.0_f32;
+    let mut pairs = 0.0_f32;
+    for i in 0..mask.len() {
+        for j in (i + 1)..mask.len() {
+            let interval = ((mask[i] as i16 - mask[j] as i16).abs() % 12) as u8;
+            let simple = interval.min(12 - interval);
+            total += match simple {
+                0 => 0.0,
+                5 | 7 => 0.08,
+                3 | 4 | 8 | 9 => 0.22,
+                2 | 10 => 0.55,
+                1 | 6 | 11 => 0.85,
+                _ => 0.35,
+            };
+            pairs += 1.0;
+        }
+    }
+    (total / pairs).clamp(0.0, 1.0)
 }
 
 struct AtomicPatch {
@@ -1844,7 +2166,8 @@ mod tests {
     #[test]
     fn api_health_endpoint_responds() {
         let addr = free_bind_addr();
-        let _rx = start_api_server(&addr).unwrap();
+        let state = Arc::new(Mutex::new(ApiStateSnapshot::default()));
+        let _rx = start_api_server(&addr, state).unwrap();
 
         let response = http_request(&addr, "GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n");
 
@@ -1855,7 +2178,8 @@ mod tests {
     #[test]
     fn api_command_endpoint_delivers_typed_commands() {
         let addr = free_bind_addr();
-        let rx = start_api_server(&addr).unwrap();
+        let state = Arc::new(Mutex::new(ApiStateSnapshot::default()));
+        let rx = start_api_server(&addr, state).unwrap();
         let request = ApiCommandRequest {
             origin: EventOrigin::Ai,
             commands: vec![
@@ -1879,6 +2203,51 @@ mod tests {
     }
 
     #[test]
+    fn api_state_endpoint_returns_harmony_snapshot() {
+        let addr = free_bind_addr();
+        let state = Arc::new(Mutex::new(ApiStateSnapshot {
+            playing: true,
+            harmony: HarmonyState::default(),
+            affect: AffectState {
+                tension: 0.42,
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        let _rx = start_api_server(&addr, state).unwrap();
+
+        let response = http_request(&addr, "GET /state HTTP/1.1\r\nHost: localhost\r\n\r\n");
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("\"playing\":true"));
+        assert!(response.contains("\"chord_grid\""));
+        let body = response.split("\r\n\r\n").nth(1).unwrap();
+        let json: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert!((json["affect"]["tension"].as_f64().unwrap() - 0.42).abs() < 0.001);
+    }
+
+    #[test]
+    fn api_macro_endpoint_converts_agent_words_to_commands() {
+        let addr = free_bind_addr();
+        let state = Arc::new(Mutex::new(ApiStateSnapshot::default()));
+        let rx = start_api_server(&addr, state).unwrap();
+        let body = r#"{"origin":"Ai","intent":"dark ambient","macros":["ambient","dark","wide","play","nonsense"]}"#;
+        let wire = format!(
+            "POST /macro HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+
+        let response = http_request(&addr, &wire);
+        let delivered = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("\"accepted\""));
+        assert!(response.contains("nonsense"));
+        assert!(delivered.commands.len() >= 5);
+    }
+
+    #[test]
     fn app_applies_api_commands_to_product_state() {
         let hardware = HardwareProbe {
             cpu_threads: 2,
@@ -1889,7 +2258,8 @@ mod tests {
             opengl_version: "test".into(),
             quality_profile: "low".into(),
         };
-        let mut app = SoundWorldApp::new(hardware, None, None);
+        let api_state = Arc::new(Mutex::new(ApiStateSnapshot::default()));
+        let mut app = SoundWorldApp::new(hardware, None, None, api_state.clone());
         let initial_candidates = app.world.candidates.len();
 
         app.apply_external_command(EventOrigin::Ai, Command::Transport(TransportCommand::Play));
@@ -1920,6 +2290,8 @@ mod tests {
             app.project.history.events.last().map(|event| &event.origin),
             Some(EventOrigin::Ai)
         ));
+        app.publish_api_state();
+        assert_eq!(api_state.lock().unwrap().music.density, 0.2);
     }
 
     #[test]

@@ -361,9 +361,9 @@ Then deterministic SoundWorld code turns the plan into commands and audio.
 
 Do this next:
 
-1. Add `HarmonyState` to SoundWorld.
-2. Add `/state`.
-3. Add `/plan` or `/macro` accepting a small JSON plan like above.
+1. Expand the current `HarmonyState` with chord-grid scheduling.
+2. Expand the current `/state` snapshot with current bar/beat and active chord index.
+3. Expand the current `/macro` endpoint into a richer `/plan` endpoint accepting a small JSON plan like above.
 4. Add deterministic chord-grid generation in Rust.
 5. Add visual mapping from `tension`, `dissonance`, `voice_leading_distance`, and `arousal`.
 6. Keep RAVE/DDSP/ML outside the realtime path for now.

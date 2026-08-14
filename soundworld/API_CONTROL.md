@@ -28,9 +28,12 @@ Implemented now:
 - AI planner data structures
 - localhost HTTP server on `127.0.0.1:3769`
 - `GET /health`
+- `GET /state`
 - `POST /commands`
+- `POST /macro`
 - app-side command application for transport, music density/tension/movement, visual scene, world exploration, patch mutation, anchoring, and note-on audition
-- tests for API health, command delivery, and app-state changes
+- shared harmony/affect/music/visual snapshot for agent inspection
+- tests for API health, state, macro conversion, command delivery, and app-state changes
 
 Not implemented yet:
 
@@ -79,12 +82,26 @@ Health check:
 curl -s http://127.0.0.1:3769/health
 ```
 
+Inspect current state:
+
+```bash
+curl -s http://127.0.0.1:3769/state
+```
+
 Drive the running app:
 
 ```bash
 curl -s http://127.0.0.1:3769/commands \
   -H 'Content-Type: application/json' \
   -d '{"origin":"Ai","commands":[{"Transport":"Play"},{"Music":{"SetDensity":0.25}},{"Music":{"SetMovement":0.7}},{"Visual":{"SetScene":{"name":"disabled"}}}]}'
+```
+
+Use macro words:
+
+```bash
+curl -s http://127.0.0.1:3769/macro \
+  -H 'Content-Type: application/json' \
+  -d '{"origin":"Ai","intent":"dark ambient","macros":["ambient","dark","wide","play"]}'
 ```
 
 ## LLM Provider Shape
@@ -118,6 +135,26 @@ Good first commands:
 - disable visuals
 - start/stop recording
 
+Implemented macro words:
+
+- `ambient`
+- `dark`
+- `bright`
+- `subby`
+- `heavy`
+- `wide`
+- `space`
+- `tense`
+- `uneasy`
+- `calm`
+- `low_arousal`
+- `no_visuals`
+- `visuals`
+- `black_white`
+- `slow_orbits`
+- `play`
+- `stop`
+
 Do not expose:
 
 - arbitrary filesystem writes
@@ -145,7 +182,6 @@ This avoids hard-coding one provider and keeps API keys outside the audio app.
 - provider config for disabled/local/OpenCode/OpenRouter/OpenAI
 - OpenAI/OpenRouter/OpenCode adapters
 - review-before-apply UI
-- project state summarizer
 - musical scheduling
 
 That is more work, but it builds on the same command/event layer.
