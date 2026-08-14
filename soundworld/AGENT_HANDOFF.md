@@ -6,7 +6,7 @@ This file is for an external coding agent continuing the SoundWorld build. It sh
 
 ## One-Line Product State
 
-SoundWorld is a lightweight Rust `egui`/`CPAL` standalone audiovisual instrument and AI-control prototype for a low-RAM Linux laptop. It is not a DAW and does not host Surge XT/Cardinal plugins yet.
+SoundWorld is a lightweight Rust `egui`/`CPAL` standalone audiovisual instrument and AI-control prototype for a low-RAM Linux laptop. It is not a DAW and does not host Surge XT/Cardinal plugins yet. The requested product direction is now a proper OpenDaw-based DAW stack; read `../docs/OPENDAW_INTEGRATION.md` before extending SoundWorld.
 
 ## Current Local/Repo State
 
@@ -25,7 +25,7 @@ soundworld/
 Known pushed commit after the API/red-team pass:
 
 ```text
-ada3919
+3f839e0
 ```
 
 Local working clone used during this pass:
@@ -184,6 +184,28 @@ Project.accept_command(...)
         ↓
 audio/world/visual/session state
 ```
+
+## OpenDaw Pivot
+
+The user has explicitly asked for "full opendaw integration and the other repos" and a "full proper daw".
+
+Do not keep polishing the standalone prototype as if it is the final product. The next build should make OpenDaw the DAW host and move Mangy/SoundWorld ideas into an agent/controller layer.
+
+Repo-level files for the DAW pivot:
+
+```text
+../docs/OPENDAW_INTEGRATION.md
+../docs/OTHER_REPOS_ROADMAP.md
+../docs/DAW_VALIDATION.md
+../scripts/setup-opendaw-stack.sh
+```
+
+Current OpenDaw local validation status:
+
+- Linux dependencies installed and visible: Qt6 6.8.2, Ninja 1.12.1, CMake 3.31.6.
+- Reference OpenDaw clone exists under ignored `references/4daw/OpenDaw`.
+- JUCE/Tracktion submodule download failed due GitHub/network transfer instability, so no OpenDaw build proof exists yet.
+- Retry via `../scripts/setup-opendaw-stack.sh`.
 
 ## Existing Synth/DAW Context
 
