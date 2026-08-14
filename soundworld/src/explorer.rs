@@ -116,11 +116,31 @@ impl<T: Clone> Pattern<T> {
         self.events
             .iter()
             .filter(|event| {
-                let end = event.start_beats + event.duration_beats;
-                phase >= event.start_beats && phase < end
+                event_contains_phase(
+                    phase,
+                    event.start_beats,
+                    event.duration_beats,
+                    self.period_beats,
+                )
             })
             .map(|event| event.value.clone())
             .collect()
+    }
+}
+
+fn event_contains_phase(phase: f32, start: f32, duration: f32, period: f32) -> bool {
+    if duration <= 0.0 || period <= 0.0 {
+        return false;
+    }
+    if duration >= period {
+        return true;
+    }
+    let start = start.rem_euclid(period);
+    let end = (start + duration).rem_euclid(period);
+    if start < end {
+        phase >= start && phase < end
+    } else {
+        phase >= start || phase < end
     }
 }
 
@@ -292,6 +312,22 @@ mod tests {
         assert_eq!(pattern.values_at(3.5), vec!["b"]);
         assert_eq!(pattern.values_at(5.2), vec!["a"]);
         assert!(pattern.values_at(2.0).is_empty());
+    }
+
+    #[test]
+    fn pattern_handles_events_wrapping_period_boundary() {
+        let pattern = Pattern {
+            period_beats: 5.0,
+            events: vec![PatternEvent {
+                start_beats: 4.5,
+                duration_beats: 1.0,
+                value: "wrap",
+            }],
+        };
+
+        assert_eq!(pattern.values_at(4.75), vec!["wrap"]);
+        assert_eq!(pattern.values_at(5.25), vec!["wrap"]);
+        assert!(pattern.values_at(3.0).is_empty());
     }
 
     #[test]

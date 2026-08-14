@@ -31,9 +31,10 @@ Implemented now:
 - `GET /state`
 - `POST /commands`
 - `POST /macro`
+- `POST /llm`
 - app-side command application for transport, music density/tension/movement, visual scene, world exploration, patch mutation, anchoring, and note-on audition
 - shared harmony/affect/music/visual snapshot for agent inspection
-- tests for API health, state, macro conversion, command delivery, and app-state changes
+- tests for API health, state, macro conversion, LLM text parsing, command delivery, and app-state changes
 
 Not implemented yet:
 
@@ -104,6 +105,16 @@ curl -s http://127.0.0.1:3769/macro \
   -d '{"origin":"Ai","intent":"dark ambient","macros":["ambient","dark","wide","play"]}'
 ```
 
+OpenCode/local LLM adapter:
+
+```bash
+curl -s http://127.0.0.1:3769/llm \
+  -H 'Content-Type: application/json' \
+  -d '{"provider":"opencode-go","text":"start dark ambient low arousal wide drone","apply":true}'
+```
+
+This endpoint is intentionally local and deterministic for now. It does not call a network model from the audio app. OpenCode, a Go service, or any other agent can call it directly, or translate richer plans into `/commands`.
+
 ## LLM Provider Shape
 
 Do not let the model send shell commands or edit files. The model should return an `AiPlan`:
@@ -155,6 +166,18 @@ Implemented macro words:
 - `play`
 - `stop`
 
+`POST /llm` currently recognizes phrases around:
+
+- ambient / drone / Eno
+- dark / bright
+- wide / space
+- sub / heavy / bass
+- tense / uneasy / uncanny
+- calm / low arousal / slow
+- visuals / no visuals
+- play / start / run / record
+- stop
+
 Do not expose:
 
 - arbitrary filesystem writes
@@ -180,7 +203,7 @@ This avoids hard-coding one provider and keeps API keys outside the audio app.
 
 - chat panel in the GUI
 - provider config for disabled/local/OpenCode/OpenRouter/OpenAI
-- OpenAI/OpenRouter/OpenCode adapters
+- external OpenAI/OpenRouter/OpenCode process adapters
 - review-before-apply UI
 - musical scheduling
 

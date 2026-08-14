@@ -84,6 +84,28 @@ struct ApiMacroResponse {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+struct ApiLlmRequest {
+    #[serde(default = "default_api_origin")]
+    origin: EventOrigin,
+    #[serde(default = "default_llm_provider")]
+    provider: String,
+    text: String,
+    #[serde(default)]
+    apply: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ApiLlmResponse {
+    provider: String,
+    applied: bool,
+    macros: Vec<String>,
+    accepted: usize,
+    commands: Vec<Command>,
+    rejected: Vec<String>,
+    note: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct ApiStateSnapshot {
     service: String,
     playing: bool,
@@ -158,6 +180,10 @@ fn default_api_origin() -> EventOrigin {
     EventOrigin::Ai
 }
 
+fn default_llm_provider() -> String {
+    "local".into()
+}
+
 fn start_api_server(
     bind: &str,
     state: Arc<Mutex<ApiStateSnapshot>>,
@@ -223,6 +249,39 @@ fn handle_api_stream(
                 macros: request.macros,
                 commands,
                 rejected,
+            };
+            return Ok((200, serde_json::to_value(response)?));
+        }
+        if method == "POST" && path == "/llm" {
+            let request: ApiLlmRequest =
+                serde_json::from_slice(&body).context("invalid llm JSON")?;
+            let macros = text_to_macros(&request.text);
+            let (commands, mut rejected) = macros_to_commands(&macros);
+            if macros.is_empty() {
+                rejected.push("no known musical intent found".into());
+            }
+            let accepted = commands.len();
+            if request.apply && accepted > 0 {
+                tx.send(ApiCommandRequest {
+                    origin: request.origin,
+                    commands: commands.clone(),
+                })
+                .context("send llm commands to app")?;
+            }
+            let provider = request.provider.trim().to_lowercase();
+            let note = if provider == "opencode" || provider == "opencode-go" {
+                "OpenCode-compatible local endpoint: SoundWorld currently uses deterministic local intent parsing here; external opencode can call this endpoint or translate into /commands."
+            } else {
+                "Local deterministic intent parser; no network LLM call is made in the audio app."
+            };
+            let response = ApiLlmResponse {
+                provider,
+                applied: request.apply && accepted > 0,
+                macros,
+                accepted,
+                commands,
+                rejected,
+                note: note.into(),
             };
             return Ok((200, serde_json::to_value(response)?));
         }
@@ -339,6 +398,60 @@ fn macros_to_commands(macros: &[String]) -> (Vec<Command>, Vec<String>) {
         }
     }
     (commands, rejected)
+}
+
+fn text_to_macros(text: &str) -> Vec<String> {
+    let text = text.to_lowercase();
+    let mut macros = Vec::new();
+    let mut add = |name: &str| {
+        if !macros.iter().any(|existing| existing == name) {
+            macros.push(name.to_string());
+        }
+    };
+    if text.contains("ambient") || text.contains("eno") || text.contains("drone") {
+        add("ambient");
+    }
+    if text.contains("dark") || text.contains("gloom") || text.contains("shadow") {
+        add("dark");
+    }
+    if text.contains("bright") || text.contains("light") || text.contains("clear") {
+        add("bright");
+    }
+    if text.contains("wide") || text.contains("space") || text.contains("spacious") {
+        add("wide");
+    }
+    if text.contains("sub") || text.contains("heavy") || text.contains("bass") {
+        add("subby");
+    }
+    if text.contains("tense") || text.contains("uneasy") || text.contains("uncanny") {
+        add("tense");
+    }
+    if text.contains("calm") || text.contains("low arousal") || text.contains("slow") {
+        add("calm");
+    }
+    if text.contains("no visuals")
+        || text.contains("disable visuals")
+        || text.contains("without visuals")
+    {
+        add("no_visuals");
+    } else if text.contains("visual")
+        || text.contains("black")
+        || text.contains("white")
+        || text.contains("orbits")
+    {
+        add("visuals");
+    }
+    if text.contains("play")
+        || text.contains("start")
+        || text.contains("run")
+        || text.contains("record")
+    {
+        add("play");
+    }
+    if text.contains("stop") {
+        add("stop");
+    }
+    macros
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -2245,6 +2358,41 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 200 OK"));
         assert!(response.contains("\"accepted\""));
         assert!(response.contains("nonsense"));
+        assert!(delivered.commands.len() >= 5);
+    }
+
+    #[test]
+    fn text_to_macros_extracts_ambient_intent() {
+        let macros = text_to_macros(
+            "Start a dark ambient drone, low arousal, wide space, with black and white visuals",
+        );
+
+        assert!(macros.contains(&"ambient".into()));
+        assert!(macros.contains(&"dark".into()));
+        assert!(macros.contains(&"wide".into()));
+        assert!(macros.contains(&"calm".into()));
+        assert!(macros.contains(&"visuals".into()));
+        assert!(macros.contains(&"play".into()));
+    }
+
+    #[test]
+    fn api_llm_endpoint_accepts_opencode_style_text() {
+        let addr = free_bind_addr();
+        let state = Arc::new(Mutex::new(ApiStateSnapshot::default()));
+        let rx = start_api_server(&addr, state).unwrap();
+        let body = r#"{"provider":"opencode-go","text":"start dark ambient low arousal wide drone","apply":true}"#;
+        let wire = format!(
+            "POST /llm HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+
+        let response = http_request(&addr, &wire);
+        let delivered = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("\"provider\":\"opencode-go\""));
+        assert!(response.contains("\"applied\":true"));
         assert!(delivered.commands.len() >= 5);
     }
 

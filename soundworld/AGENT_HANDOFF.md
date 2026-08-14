@@ -113,6 +113,14 @@ curl -s http://127.0.0.1:3769/macro \
   -d '{"origin":"Ai","intent":"dark ambient","macros":["ambient","dark","wide","play"]}'
 ```
 
+OpenCode/local LLM text batch:
+
+```bash
+curl -s http://127.0.0.1:3769/llm \
+  -H 'Content-Type: application/json' \
+  -d '{"provider":"opencode-go","text":"start dark ambient low arousal wide drone","apply":true}'
+```
+
 Implemented command application covers:
 
 - transport play/stop/BPM
@@ -125,6 +133,7 @@ Implemented command application covers:
 - note-on audition
 - `GET /state` exposes transport, patch summary, music state, harmony state, visual state, and affect metrics
 - `POST /macro` maps simple words into typed commands
+- `POST /llm` accepts local/OpenCode-style free text and maps it to deterministic macros/commands
 
 Important: `POST /macro` reports rejected unknown macro words. `POST /commands` still accepts valid typed `Command` JSON directly, so it needs a stricter allowlist before exposing it beyond localhost.
 

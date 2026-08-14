@@ -9,13 +9,13 @@ This is a prototype validation pass, not a claim that SoundWorld is a finished D
 | Area | Status | Notes |
 | --- | --- | --- |
 | Rust formatting | PASS | `cargo fmt` completed cleanly. |
-| Unit tests | PASS | 10 tests passed. |
+| Unit tests | PASS | 16 tests passed. |
 | Crate check | PASS | `cargo check` completed cleanly. |
 | Optimized build | PASS | `cargo build --release` completed cleanly. |
 | GUI launch | PASS | Installed release binary launched on `DISPLAY=:0` and stayed alive until timeout killed it. |
-| Local API | PASS | `GET /health`, `GET /state`, `POST /commands`, and `POST /macro` are covered by unit tests. |
+| Local API | PASS | `GET /health`, `GET /state`, `POST /commands`, `POST /macro`, and `POST /llm` are covered by unit tests. |
 | API drives app state | PASS | Test applies API-style commands and verifies playback, density, visuals, exploration, and AI-origin event logging. |
-| Live API drives GUI | PASS | Running GUI returned state, accepted macro/command batches, showed changed state after macro application, and stayed alive until the smoke-test timeout. |
+| Live API drives GUI | PASS | Running GUI returned state, accepted macro/command/LLM batches, showed changed state after application, and stayed alive until the smoke-test timeout. |
 | Synth makes signal | PASS | Headless DSP test generated nonzero finite samples after a MIDI note. |
 | Visuals render path | PASS/WARN | GUI render loop smoke-tested. No crash. No screenshot or pixel-level validation was performed in this pass. |
 | Physical speaker output | WARN | DSP output is validated, but nobody listened to the speakers during this automated pass. |
@@ -126,6 +126,36 @@ event_count=13
 
 The GUI process stayed alive until the 35 second timeout killed it.
 
+The live OpenCode-style `/llm` smoke test used:
+
+```bash
+curl -s http://127.0.0.1:3769/llm \
+  -H 'Content-Type: application/json' \
+  -d '{"provider":"opencode-go","text":"start dark ambient low arousal wide drone with visuals","apply":true}'
+```
+
+Result:
+
+```json
+{"accepted":13,"applied":true,"provider":"opencode-go","rejected":[]}
+```
+
+After `/llm` state included:
+
+```text
+playing=true
+mode=Visual
+bpm=62.0
+density=0.16
+movement=0.14
+tension=0.18
+cutoff=0.20
+space=0.78
+event_count=14
+```
+
+The GUI process stayed alive until the 25 second timeout killed it.
+
 ## Unit Test Coverage Added
 
 The current red-team tests in `src/main.rs` cover:
@@ -138,8 +168,14 @@ The current red-team tests in `src/main.rs` cover:
 - `api_command_endpoint_delivers_typed_commands`: verifies JSON commands travel through the HTTP server into the app command channel.
 - `api_state_endpoint_returns_harmony_snapshot`: verifies the API exposes harmony, affect, and transport state.
 - `api_macro_endpoint_converts_agent_words_to_commands`: verifies macro words become typed commands and unknown macro words are reported.
+- `text_to_macros_extracts_ambient_intent`: verifies free text maps to deterministic musical macros.
+- `api_llm_endpoint_accepts_opencode_style_text`: verifies `POST /llm` accepts OpenCode-style provider text and delivers commands when `apply=true`.
 - `app_applies_api_commands_to_product_state`: verifies API-style commands affect real app state and log AI-origin events.
 - `records_synth_run_to_nonzero_wav`: verifies generated synth audio is written to a readable stereo WAV file with nonzero samples.
+- `pattern_queries_values_by_phase`: verifies `Pattern<T>` can be queried by beat phase.
+- `pattern_handles_events_wrapping_period_boundary`: verifies cyclic pattern events work when they cross the period boundary.
+- `voice_leading_distance_prefers_small_motion`: verifies the native voice-leading metric ranks smaller motion lower.
+- `harmony_explorer_scores_bridge_with_constraints`: verifies the first `HarmonyExplorer` returns a measured bridge candidate with constraint-aware scoring.
 
 ## Red-Team Findings
 
@@ -150,6 +186,10 @@ The current red-team tests in `src/main.rs` cover:
 5. SoundWorld should still be treated as a standalone instrument/runtime, not a replacement DAW. Surge XT and Cardinal should be used in Ardour/REAPER for now.
 6. API tests require permission to bind/connect localhost. In the restricted sandbox they fail with `Operation not permitted`; outside that sandbox they pass.
 7. `POST /macro` reports rejected unknown macro words. `POST /commands` still accepts well-formed typed commands directly, so a future security pass should add an explicit allowlist if untrusted clients can reach it.
+8. Red-team found that the first `Pattern<T>` implementation did not handle events spanning the cycle boundary. This is fixed and covered by `pattern_handles_events_wrapping_period_boundary`.
+9. The current `HarmonyExplorer` is intentionally minimal: it scores a direct bridge, not multi-step path search. The `steps` field exists but is not yet used for intermediate-node generation.
+10. `chord_roughness` is still a pitch-class approximation. It is not a Sethares/Plomp-Levelt partials-based model yet.
+11. `POST /llm` is an OpenCode-compatible local endpoint, not a live external LLM call. It uses deterministic intent parsing so an external OpenCode/Go service can call SoundWorld safely today.
 
 ## Next Validation Items
 
@@ -157,3 +197,4 @@ The current red-team tests in `src/main.rs` cover:
 - Launch from the desktop `.desktop` entry, not just the binary path.
 - Validate real audio device output through PipeWire/ALSA with a short audible tone test.
 - Validate Ardour or REAPER can see Surge XT and Cardinal from the documented plugin paths.
+- Add multi-step bridge search tests once `HarmonyExplorer` uses intermediate nodes.
