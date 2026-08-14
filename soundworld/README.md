@@ -36,6 +36,7 @@ Project state is JSON-first. User data defaults to:
 Read next:
 
 - [AGENT_HANDOFF.md](AGENT_HANDOFF.md)
+- [4DAW_REFERENCE_NOTES.md](4DAW_REFERENCE_NOTES.md)
 - [USER_GUIDE.md](USER_GUIDE.md)
 - [LOCAL_TEST_STATE.md](LOCAL_TEST_STATE.md)
 - [TESTING_NOTES.md](TESTING_NOTES.md)

@@ -26,6 +26,7 @@ use uuid::Uuid;
 
 mod ai;
 mod core;
+mod explorer;
 mod world;
 use crate::core::{
     Command, EventOrigin, InstrumentCommand, MusicCommand, ParamId, Project, SoundCommand,
