@@ -284,6 +284,7 @@ Risks:
 Read:
 
 - `AI_DAW_RESEARCH.md`
+- `HARMONY_AGENT_RESEARCH.md`
 - `RESEARCH_NOTES.md`
 - `API_CONTROL.md`
 - `AI_PLANNER.md`

@@ -1503,13 +1503,22 @@ fn wave_id(w: Wave) -> u32 {
 }
 
 fn spawn_writer(rx: Receiver<(f32, f32)>, recording: Arc<AtomicBool>, sample_rate: u32) {
+    spawn_writer_at(rx, recording, sample_rate, data_dir());
+}
+
+fn spawn_writer_at(
+    rx: Receiver<(f32, f32)>,
+    recording: Arc<AtomicBool>,
+    sample_rate: u32,
+    data_root: PathBuf,
+) {
     std::thread::spawn(move || {
         let mut writer: Option<WavWriter<BufWriter<File>>> = None;
         let mut was_recording = false;
         loop {
             let is_recording = recording.load(Ordering::Relaxed);
             if is_recording && !was_recording {
-                let dir = data_dir().join("Default.soundworld/recordings");
+                let dir = data_root.join("Default.soundworld/recordings");
                 let _ = fs::create_dir_all(&dir);
                 let path = dir.join(format!(
                     "session-{}.wav",
@@ -1748,6 +1757,7 @@ mod tests {
         Arc,
     };
     use std::time::Duration;
+    use std::{fs, thread};
 
     fn free_bind_addr() -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1910,5 +1920,48 @@ mod tests {
             app.project.history.events.last().map(|event| &event.origin),
             Some(EventOrigin::Ai)
         ));
+    }
+
+    #[test]
+    fn records_synth_run_to_nonzero_wav() {
+        let data_root = std::env::temp_dir().join(format!("soundworld-test-{}", Uuid::new_v4()));
+        let patch = Arc::new(AtomicPatch::new());
+        let (note_tx, note_rx) = bounded::<NoteMsg>(8);
+        let (writer_tx, writer_rx) = bounded::<(f32, f32)>(48_000);
+        let recording = Arc::new(AtomicBool::new(false));
+        spawn_writer_at(writer_rx, recording.clone(), 48_000, data_root.clone());
+        let mut synth = Synth::new(48_000.0, patch, note_rx, writer_tx, recording.clone());
+
+        recording.store(true, Ordering::Relaxed);
+        note_tx
+            .send(NoteMsg {
+                midi: 36,
+                velocity: 0.9,
+            })
+            .unwrap();
+        for _ in 0..4096 {
+            let sample = synth.next_frame_sample();
+            synth.writer_tx.send((sample, sample)).unwrap();
+        }
+        recording.store(false, Ordering::Relaxed);
+        thread::sleep(Duration::from_millis(120));
+
+        let recordings = data_root.join("Default.soundworld/recordings");
+        let wav_path = fs::read_dir(&recordings)
+            .unwrap()
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .find(|path| path.extension().is_some_and(|ext| ext == "wav"))
+            .expect("expected a recorded wav file");
+        let mut reader = hound::WavReader::open(&wav_path).unwrap();
+        let spec = reader.spec();
+        let samples: Vec<i16> = reader.samples::<i16>().map(|s| s.unwrap()).collect();
+        let peak = samples.iter().map(|s| s.abs()).max().unwrap_or(0);
+
+        assert_eq!(spec.channels, 2);
+        assert_eq!(spec.sample_rate, 48_000);
+        assert!(samples.len() >= 4096, "expected recorded stereo samples");
+        assert!(peak > 0, "expected nonzero recorded audio");
+
+        let _ = fs::remove_dir_all(data_root);
     }
 }

@@ -9,7 +9,7 @@ This is a prototype validation pass, not a claim that SoundWorld is a finished D
 | Area | Status | Notes |
 | --- | --- | --- |
 | Rust formatting | PASS | `cargo fmt` completed cleanly. |
-| Unit tests | PASS | 7 tests passed. |
+| Unit tests | PASS | 8 tests passed. |
 | Crate check | PASS | `cargo check` completed cleanly. |
 | Optimized build | PASS | `cargo build --release` completed cleanly. |
 | GUI launch | PASS | Installed release binary launched on `DISPLAY=:0` and stayed alive until timeout killed it. |
@@ -19,7 +19,7 @@ This is a prototype validation pass, not a claim that SoundWorld is a finished D
 | Synth makes signal | PASS | Headless DSP test generated nonzero finite samples after a MIDI note. |
 | Visuals render path | PASS/WARN | GUI render loop smoke-tested. No crash. No screenshot or pixel-level validation was performed in this pass. |
 | Physical speaker output | WARN | DSP output is validated, but nobody listened to the speakers during this automated pass. |
-| WAV recording | NOT TESTED | WAV writer exists in the app, but recording start/stop and file playback were not validated end to end here. |
+| WAV recording | PASS | `records_synth_run_to_nonzero_wav` writes generated synth audio through the WAV writer, reopens the file, and verifies stereo 48 kHz nonzero samples. |
 | Surge XT/Cardinal in DAW | NOT TESTED | Existing documentation explains using them in Ardour/REAPER. This pass did not rescan DAW plugin paths or launch a DAW. |
 
 ## Commands Run
@@ -92,12 +92,13 @@ The current red-team tests in `src/main.rs` cover:
 - `api_health_endpoint_responds`: verifies the localhost API health endpoint responds.
 - `api_command_endpoint_delivers_typed_commands`: verifies JSON commands travel through the HTTP server into the app command channel.
 - `app_applies_api_commands_to_product_state`: verifies API-style commands affect real app state and log AI-origin events.
+- `records_synth_run_to_nonzero_wav`: verifies generated synth audio is written to a readable stereo WAV file with nonzero samples.
 
 ## Red-Team Findings
 
 1. Building inside `/tmp/mangycunt-soundworld/soundworld/target` can fail on this machine because `/tmp` is a small tmpfs.
 2. Use `CARGO_TARGET_DIR=/root/mangy-cargo-target` for repeatable local builds on this system.
-3. Current audio validation proves the synth DSP path emits a signal. It does not prove ALSA/PipeWire speaker routing is audible.
+3. Current audio validation proves the synth DSP path emits a signal and the WAV writer can save nonzero generated audio. It does not prove ALSA/PipeWire speaker routing is audible.
 4. Current visual validation proves the app opens and keeps a GUI render loop alive. It does not prove every visual mode is correctly framed on every viewport.
 5. SoundWorld should still be treated as a standalone instrument/runtime, not a replacement DAW. Surge XT and Cardinal should be used in Ardour/REAPER for now.
 6. API tests require permission to bind/connect localhost. In the restricted sandbox they fail with `Operation not permitted`; outside that sandbox they pass.
@@ -105,7 +106,6 @@ The current red-team tests in `src/main.rs` cover:
 
 ## Next Validation Items
 
-- Add an end-to-end WAV recording test that starts recording, writes samples, stops, and verifies a readable `.wav` file with nonzero audio.
 - Add screenshot or pixel-read validation for the visual modes.
 - Launch from the desktop `.desktop` entry, not just the binary path.
 - Validate real audio device output through PipeWire/ALSA with a short audible tone test.
