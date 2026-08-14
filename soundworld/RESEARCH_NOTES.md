@@ -2,6 +2,8 @@
 
 This file records the working questions behind SoundWorld and where to research next.
 
+For external coding agents, read `AGENT_HANDOFF.md` first. This file is broader research context; it includes ideas that are not implemented.
+
 ## Current User Questions
 
 - What is SoundWorld?
@@ -188,6 +190,32 @@ Only after the instrument interaction is clearly useful, prototype one plugin fo
 
 Do not make the main app depend on plugin hosting until the prototype is reliable.
 
+### M5: Neural / Frontier ML Companion Mode
+
+Treat RAVE, Magenta RealTime-style models, pGESAM, latent timbre synthesis, and similar research projects as external/offline companions first.
+
+Preferred flow:
+
+```text
+research model or neural instrument
+        ↓
+render audio / embeddings / metadata
+        ↓
+SoundWorld corpus import
+        ↓
+agent explores, anchors, maps, and arranges
+```
+
+Do not train or run heavy neural models in the realtime SoundWorld app on the target low-RAM laptop unless there is proof it stays responsive.
+
+Research:
+
+- RAVE realtime neural audio: https://github.com/acids-ircam/RAVE
+- Magenta RealTime 2: https://magenta.withgoogle.com/magenta-realtime-2
+- nn~ style neural plugin workflows
+- AudioStellar-style 2D sound corpus exploration
+- latent timbre synthesis and pGESAM-style research repos from the original spec
+
 ## Installed Synths And DAW Use
 
 Surge XT:
@@ -218,6 +246,12 @@ PipeWire / qpwgraph:
 ## Research Links
 
 - Surge XT releases: https://github.com/surge-synthesizer/releases-xt/releases
+- Cardinal: https://github.com/DISTRHO/Cardinal
+- RAVE: https://github.com/acids-ircam/RAVE
+- Magenta RealTime 2: https://magenta.withgoogle.com/magenta-realtime-2
+- Ableton MCP Extended: https://github.com/uisato/ableton-mcp-extended
+- ChatM4L: https://chatm4l.com/
+- nob intelligent synth: https://www.nob.audio/
 - Surge XT source: https://github.com/surge-synthesizer/surge
 - Cardinal: https://github.com/DISTRHO/Cardinal
 - Ardour: https://github.com/Ardour/ardour
