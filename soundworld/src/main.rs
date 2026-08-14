@@ -329,6 +329,7 @@ struct SoundWorldApp {
     started: Instant,
     playing: bool,
     recording: bool,
+    visuals_enabled: bool,
     last_note: Instant,
 }
 
@@ -379,6 +380,7 @@ impl SoundWorldApp {
             started: Instant::now(),
             playing: false,
             recording: false,
+            visuals_enabled: true,
             last_note: Instant::now(),
         };
         app.sync_audio_patch();
@@ -502,6 +504,50 @@ impl SoundWorldApp {
             "less tension" => self.nudge("tension", -0.15),
             "more space" => self.nudge("space", 0.15),
             "less space" => self.nudge("space", -0.15),
+            "start ambient" | "start ambient track" | "generate ambient" => {
+                self.playing = true;
+                self.project.accept_command(
+                    EventOrigin::HumanUi,
+                    Command::Transport(TransportCommand::Play),
+                );
+            }
+            "start ambient no visuals" | "start ambient track no visuals" => {
+                self.playing = true;
+                self.visuals_enabled = false;
+                self.mode = Mode::Track;
+                self.project.accept_command(
+                    EventOrigin::HumanUi,
+                    Command::Transport(TransportCommand::Play),
+                );
+                self.project.accept_command(
+                    EventOrigin::HumanUi,
+                    Command::Visual(VisualCommand::SetScene {
+                        name: "disabled".into(),
+                    }),
+                );
+            }
+            "visuals" | "show visuals" | "enable visuals" => {
+                self.visuals_enabled = true;
+                self.mode = Mode::Visual;
+                self.project.accept_command(
+                    EventOrigin::HumanUi,
+                    Command::Visual(VisualCommand::SetScene {
+                        name: "harmonic_orbits_low".into(),
+                    }),
+                );
+            }
+            "no visuals" | "hide visuals" | "disable visuals" => {
+                self.visuals_enabled = false;
+                if self.mode == Mode::Visual {
+                    self.mode = Mode::Track;
+                }
+                self.project.accept_command(
+                    EventOrigin::HumanUi,
+                    Command::Visual(VisualCommand::SetScene {
+                        name: "disabled".into(),
+                    }),
+                );
+            }
             "explore" => self.generate_candidates(),
             "anchor this" | "anchor" => self.anchor_current(),
             "new bass" => {
@@ -589,15 +635,18 @@ impl SoundWorldApp {
 impl eframe::App for SoundWorldApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.ambient_tick();
-        self.visual.geometry_scale = 0.35 + self.music.energy * 0.5 + self.patch.sub_level * 0.2;
-        self.visual.brightness = 0.2 + self.patch.filter.cutoff * 0.7;
-        self.visual.deformation = self.music.tension * 0.7 + self.patch.filter.drive * 0.3;
-        self.visual.particle_density = self.music.density;
-        self.visual.rotation_speed = self.music.movement;
-        self.visual.harmonic_position = [
-            self.music.tension * 2.0 - 1.0,
-            self.music.novelty * 2.0 - 1.0,
-        ];
+        if self.visuals_enabled {
+            self.visual.geometry_scale =
+                0.35 + self.music.energy * 0.5 + self.patch.sub_level * 0.2;
+            self.visual.brightness = 0.2 + self.patch.filter.cutoff * 0.7;
+            self.visual.deformation = self.music.tension * 0.7 + self.patch.filter.drive * 0.3;
+            self.visual.particle_density = self.music.density;
+            self.visual.rotation_speed = self.music.movement;
+            self.visual.harmonic_position = [
+                self.music.tension * 2.0 - 1.0,
+                self.music.novelty * 2.0 - 1.0,
+            ];
+        }
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -622,6 +671,11 @@ impl eframe::App for SoundWorldApp {
                     self.hardware.recommended_buffer,
                     self.hardware.quality_profile
                 ));
+                ui.label(if self.visuals_enabled {
+                    "visuals on"
+                } else {
+                    "visuals off"
+                });
             });
         });
 
@@ -685,7 +739,10 @@ impl eframe::App for SoundWorldApp {
             });
         });
 
-        let repaint_ms = if self.playing || self.recording || self.mode == Mode::Visual {
+        let repaint_ms = if self.playing
+            || self.recording
+            || (self.mode == Mode::Visual && self.visuals_enabled)
+        {
             33
         } else {
             100
@@ -899,6 +956,23 @@ impl SoundWorldApp {
 
     fn ui_visual(&mut self, ui: &mut egui::Ui) {
         ui.heading("Music-driven Procedural Visual");
+        ui.horizontal(|ui| {
+            if ui
+                .button(if self.visuals_enabled {
+                    "Disable visuals"
+                } else {
+                    "Enable visuals"
+                })
+                .clicked()
+            {
+                self.visuals_enabled = !self.visuals_enabled;
+            }
+            ui.label("Low-cost greyscale harmonic orbits.");
+        });
+        if !self.visuals_enabled {
+            ui.label("Visual rendering is disabled. Audio and command/event recording continue.");
+            return;
+        }
         let (rect, _) = ui.allocate_exact_size(
             egui::vec2(ui.available_width(), 500.0),
             egui::Sense::hover(),
@@ -947,6 +1021,7 @@ impl SoundWorldApp {
             "Transport: {:.1} bpm | playing {}",
             self.project.transport.bpm, self.project.transport.playing
         ));
+        ui.label(format!("Visuals enabled: {}", self.visuals_enabled));
         if ui.button("Use harmonic_orbits_low scene").clicked() {
             self.project.accept_command(
                 EventOrigin::HumanUi,
@@ -974,8 +1049,12 @@ impl SoundWorldApp {
         ui.label("2. Press Save patch when it sounds useful.");
         ui.label("3. Open WORLD. Click candidate nodes to audition variations. Anchor the ones worth keeping.");
         ui.label("4. Open TRACK. Press Generate Ambient, then use density, movement, tension, novelty, and energy.");
-        ui.label("5. Type commands below: darker, brighter, more movement, less dense, more strange, more tension, more space, explore, anchor.");
+        ui.label("5. Use the bottom command bar like a tiny chatbar. Current local commands: start ambient, start ambient no visuals, no visuals, visuals, darker, brighter, more movement, less dense, more strange, more tension, more space, explore, anchor.");
         ui.label("6. Press Record WAV to capture audio. Files land in ~/.local/share/soundworld/Default.soundworld/recordings.");
+        ui.separator();
+        ui.label("AI-native direction");
+        ui.label("The command bar is intentionally shaped like a future chatbar. Today it uses a tiny local parser. Next, an LLM provider can translate free text into the same safe Command -> Event system.");
+        ui.label("Example future prompt: start an ambient track with the anchored basses, no visuals, slowly get darker over 16 bars.");
         ui.separator();
         ui.label("Other synths installed for DAWs");
         ui.label("Surge XT: standalone app plus VST3/LV2/CLAP plugins. Use it for polished bass sound design.");
