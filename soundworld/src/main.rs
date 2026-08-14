@@ -22,6 +22,13 @@ use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+mod ai;
+mod core;
+use crate::core::{
+    Command, EventOrigin, MusicCommand, ParamId, Project, SoundCommand, TransportCommand,
+    VisualCommand, WorldCommand,
+};
+
 fn main() -> eframe::Result<()> {
     let hardware = HardwareProbe::probe();
     let _ = hardware.write();
@@ -308,6 +315,7 @@ enum WorldEvent {
 }
 
 struct SoundWorldApp {
+    project: Project,
     hardware: HardwareProbe,
     audio: Option<AudioEngine>,
     mode: Mode,
@@ -329,6 +337,7 @@ impl SoundWorldApp {
         let patch = Patch::init_bass();
         let patch_id = patch.id;
         let mut app = Self {
+            project: Project::new("Default", hardware.sample_rate, 82.0),
             hardware,
             audio,
             mode: Mode::World,
@@ -418,6 +427,13 @@ impl SoundWorldApp {
             t: self.t(),
             parent: self.patch.id,
         });
+        self.project.accept_command(
+            EventOrigin::HumanUi,
+            Command::World(WorldCommand::Explore {
+                patch: crate::core::PatchId(self.patch.id),
+                radius: self.world.exploration_radius,
+            }),
+        );
     }
 
     fn anchor_current(&mut self) {
@@ -431,6 +447,12 @@ impl SoundWorldApp {
             t: self.t(),
             patch: self.patch.id,
         });
+        self.project.accept_command(
+            EventOrigin::HumanUi,
+            Command::Sound(SoundCommand::Anchor {
+                patch: crate::core::PatchId(self.patch.id),
+            }),
+        );
         self.save_patch().ok();
         self.status = "Anchored and saved patch".into();
     }
@@ -448,6 +470,7 @@ impl SoundWorldApp {
         fs::create_dir_all(root.join("patches"))?;
         fs::create_dir_all(root.join("recordings"))?;
         let project = serde_json::json!({
+            "mangy_project": self.project,
             "world": self.world,
             "music_state": self.music,
             "visual_state": self.visual,
@@ -484,6 +507,13 @@ impl SoundWorldApp {
             "new bass" => {
                 self.patch = Patch::init_bass();
                 self.sync_audio_patch();
+                self.project.accept_command(
+                    EventOrigin::HumanUi,
+                    Command::Sound(SoundCommand::Mutate {
+                        patch: crate::core::PatchId(self.patch.id),
+                        radius: 0.0,
+                    }),
+                );
             }
             _ => understood = false,
         }
@@ -519,6 +549,14 @@ impl SoundWorldApp {
             target: target.into(),
             value: delta,
         });
+        self.project.accept_command(
+            EventOrigin::HumanUi,
+            Command::Music(MusicCommand::Nudge {
+                target: target.into(),
+                delta,
+                beats: 8.0,
+            }),
+        );
         self.sync_audio_patch();
     }
 
@@ -564,6 +602,7 @@ impl eframe::App for SoundWorldApp {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("SOUNDWORLD");
+                ui.label(format!("events {}", self.project.history.events.len()));
                 for (label, mode) in [
                     ("SYNTH", Mode::Synth),
                     ("WORLD", Mode::World),
@@ -616,6 +655,14 @@ impl eframe::App for SoundWorldApp {
                     .clicked()
                 {
                     self.playing = !self.playing;
+                    self.project.accept_command(
+                        EventOrigin::HumanUi,
+                        Command::Transport(if self.playing {
+                            TransportCommand::Play
+                        } else {
+                            TransportCommand::Stop
+                        }),
+                    );
                 }
                 if ui
                     .button(if self.recording {
@@ -729,6 +776,14 @@ impl SoundWorldApp {
         });
         if changed {
             self.sync_audio_patch();
+            self.project.accept_command(
+                EventOrigin::HumanUi,
+                Command::Sound(SoundCommand::SetParam {
+                    instrument: self.project.instruments.instruments[0].id,
+                    param: ParamId("mangy_synth.patch".into()),
+                    value: 1.0,
+                }),
+            );
         }
         if ui.button("Audition C2").clicked() {
             if let Some(audio) = &self.audio {
@@ -821,6 +876,25 @@ impl SoundWorldApp {
         ui.add(egui::Slider::new(&mut self.music.novelty, 0.0..=1.0).text("novelty"));
         ui.add(egui::Slider::new(&mut self.music.energy, 0.0..=1.0).text("energy"));
         ui.label("Layer v1: deterministic bass/motif pulses using the current patch.");
+        if ui.button("Commit music state to project graph").clicked() {
+            self.project.accept_command(
+                EventOrigin::HumanUi,
+                Command::Transport(TransportCommand::SetBpm(self.music.bpm as f64)),
+            );
+            self.project.accept_command(
+                EventOrigin::HumanUi,
+                Command::Music(MusicCommand::SetDensity(self.music.density)),
+            );
+            self.project.accept_command(
+                EventOrigin::HumanUi,
+                Command::Music(MusicCommand::SetTension(self.music.tension)),
+            );
+            self.project.accept_command(
+                EventOrigin::HumanUi,
+                Command::Music(MusicCommand::SetMovement(self.music.movement)),
+            );
+            self.status = "Committed track controls to command/event graph".into();
+        }
     }
 
     fn ui_visual(&mut self, ui: &mut egui::Ui) {
@@ -865,6 +939,22 @@ impl SoundWorldApp {
         ui.label(format!("Patches: {}", self.patches.len()));
         ui.label(format!("Anchors: {}", self.world.anchors.len()));
         ui.label(format!("Events: {}", self.world.trajectory.len()));
+        ui.label(format!(
+            "Project graph events: {}",
+            self.project.history.events.len()
+        ));
+        ui.label(format!(
+            "Transport: {:.1} bpm | playing {}",
+            self.project.transport.bpm, self.project.transport.playing
+        ));
+        if ui.button("Use harmonic_orbits_low scene").clicked() {
+            self.project.accept_command(
+                EventOrigin::HumanUi,
+                Command::Visual(VisualCommand::SetScene {
+                    name: "harmonic_orbits_low".into(),
+                }),
+            );
+        }
         if ui.button("Save project").clicked() {
             self.status = self
                 .save_project()
