@@ -1,0 +1,3 @@
+[submodule "opendaw"]
+	path = opendaw
+	url = https://github.com/prx0r/mangy-opendaw.git
