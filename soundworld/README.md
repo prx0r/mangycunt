@@ -36,6 +36,7 @@ Project state is JSON-first. User data defaults to:
 Read next:
 
 - [USER_GUIDE.md](USER_GUIDE.md)
+- [LOCAL_TEST_STATE.md](LOCAL_TEST_STATE.md)
 - [AI_PLANNER.md](AI_PLANNER.md)
 - [ARCHITECTURE.md](ARCHITECTURE.md)
 - [RESEARCH_NOTES.md](RESEARCH_NOTES.md)
